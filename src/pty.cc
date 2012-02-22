@@ -35,6 +35,8 @@
 #include <utmp.h> /* login_tty */
 #include <termios.h> /* tcgetattr, tty_ioctl */
 
+extern char **environ;
+
 using namespace std;
 using namespace node;
 using namespace v8;
