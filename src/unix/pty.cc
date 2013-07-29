@@ -15,6 +15,7 @@
 
 #include <v8.h>
 #include <node.h>
+#include <signal.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -22,6 +23,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 
 /* forkpty */
@@ -73,6 +75,9 @@ PtyResize(const Arguments&);
 static Handle<Value>
 PtyGetProc(const Arguments&);
 
+static Handle<Value>
+PtyGetStatus(const Arguments&);
+
 static int
 pty_execvpe(const char *, char **, char **);
 
@@ -92,8 +97,21 @@ pty_forkpty(int *, char *,
             const struct termios *,
             const struct winsize *);
 
+static pid_t CHILD_PID;
+static int CHILD_STATUS;
+
 extern "C" void
 init(Handle<Object>);
+
+void
+sigChldHandler(int sig) {
+    int status = 0;
+    pid_t res;
+    res = waitpid(CHILD_PID, &status, 0);
+    if (res != 0) {
+      CHILD_STATUS = WEXITSTATUS(status);
+    }
+}
 
 /**
  * PtyFork
@@ -210,6 +228,10 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
+
+      CHILD_PID = pid;
+      CHILD_STATUS = -1;
+      signal(SIGCHLD, sigChldHandler);
 
       return scope.Close(obj);
   }
@@ -333,6 +355,21 @@ PtyGetProc(const Arguments& args) {
   free(name);
   return scope.Close(name_);
 }
+
+/**
+ * PtyGetStatus
+ * Child process exit code
+ * pty.status()
+ */
+
+static Handle<Value>
+PtyGetStatus(const Arguments& args) {
+  HandleScope scope;
+
+  Local<Number> num = Number::New(CHILD_STATUS);
+  return scope.Close(num);
+}
+
 
 /**
  * execvpe
@@ -557,6 +594,7 @@ init(Handle<Object> target) {
   NODE_SET_METHOD(target, "open", PtyOpen);
   NODE_SET_METHOD(target, "resize", PtyResize);
   NODE_SET_METHOD(target, "process", PtyGetProc);
+  NODE_SET_METHOD(target, "status", PtyGetStatus);
 }
 
 NODE_MODULE(pty, init)
