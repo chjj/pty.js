@@ -25,6 +25,7 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <map>
 
 /* forkpty */
 /* http://www.gnu.org/software/gnulib/manual/html_node/forkpty.html */
@@ -97,19 +98,18 @@ pty_forkpty(int *, char *,
             const struct termios *,
             const struct winsize *);
 
-static pid_t CHILD_PID;
-static int CHILD_STATUS;
+std::map<int, int> pidMap;
 
 extern "C" void
 init(Handle<Object>);
 
 void
-sigChldHandler(int sig) {
+sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     int status = 0;
     pid_t res;
-    res = waitpid(CHILD_PID, &status, 0);
+    res = waitpid(sip->si_pid, &status, 0);
     if (res != 0) {
-      CHILD_STATUS = WEXITSTATUS(status);
+      pidMap[sip->si_pid] = WEXITSTATUS(status);
     }
 }
 
@@ -228,10 +228,12 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
-
-      CHILD_PID = pid;
-      CHILD_STATUS = -1;
-      signal(SIGCHLD, sigChldHandler);
+      obj->Set(String::New("status"), Undefined());
+      struct sigaction action;
+      memset (&action, '\0', sizeof(action));
+      action.sa_sigaction = sigChldHandler;
+      action.sa_flags = SA_SIGINFO;
+      sigaction(SIGCHLD, &action, NULL);
 
       return scope.Close(obj);
   }
@@ -358,18 +360,25 @@ PtyGetProc(const Arguments& args) {
 
 /**
  * PtyGetStatus
- * Child process exit code
- * pty.status()
+ * Foreground Process Name
+ * pty.status(pid)
  */
 
 static Handle<Value>
 PtyGetStatus(const Arguments& args) {
   HandleScope scope;
 
-  Local<Number> num = Number::New(CHILD_STATUS);
-  return scope.Close(num);
-}
+  if (args.Length() != 1
+      || !args[0]->IsNumber()) {
+    return ThrowException(Exception::Error(
+      String::New("Usage: pty.status(pid)")));
+  }
 
+  int pid = args[0]->IntegerValue();
+
+  Local<Number> statusCode = Number::New(pidMap[pid]);
+  return scope.Close(statusCode);
+}
 
 /**
  * execvpe
