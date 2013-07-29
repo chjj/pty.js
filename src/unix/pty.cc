@@ -228,7 +228,6 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
-      obj->Set(String::New("status"), Undefined());
       struct sigaction action;
       memset (&action, '\0', sizeof(action));
       action.sa_sigaction = sigChldHandler;
