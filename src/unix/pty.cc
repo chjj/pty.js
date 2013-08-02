@@ -103,6 +103,8 @@ std::map<int, int> pidMap;
 extern "C" void
 init(Handle<Object>);
 
+static void (*node_sighandler)(int) = NULL;
+
 void
 sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     int status = 0;
@@ -110,6 +112,10 @@ sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     res = waitpid(sip->si_pid, &status, 0);
     if (res != 0) {
       pidMap[sip->si_pid] = WEXITSTATUS(status);
+    }
+    // Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
+    if (node_sighandler) {
+      node_sighandler(sig);
     }
 }
 
@@ -228,11 +234,6 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
-      struct sigaction action;
-      memset (&action, '\0', sizeof(action));
-      action.sa_sigaction = sigChldHandler;
-      action.sa_flags = SA_SIGINFO;
-      sigaction(SIGCHLD, &action, NULL);
 
       return scope.Close(obj);
   }
@@ -598,6 +599,17 @@ pty_forkpty(int *amaster, char *name,
 extern "C" void
 init(Handle<Object> target) {
   HandleScope scope;
+  // retrieve node/libuv's SIGCHLD handler.
+  struct sigaction node_action;
+  node_action.sa_flags = 0;
+  sigaction(SIGCHLD, NULL, &node_action);
+  node_sighandler = node_action.sa_handler;
+  struct sigaction action;
+  memset (&action, '\0', sizeof(action));
+  action.sa_sigaction = sigChldHandler;
+  action.sa_flags = SA_SIGINFO;
+  // set new SIGCHLD handler. this will call node/libuv's handler at the end.
+  sigaction(SIGCHLD, &action, NULL);
   NODE_SET_METHOD(target, "fork", PtyFork);
   NODE_SET_METHOD(target, "open", PtyOpen);
   NODE_SET_METHOD(target, "resize", PtyResize);
