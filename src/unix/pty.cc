@@ -109,12 +109,13 @@ void
 sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     int status = 0;
     pid_t res;
-    res = waitpid(sip->si_pid, &status, 0);
-    if (res != 0) {
-      pidMap[sip->si_pid] = WEXITSTATUS(status);
-    }
-    // Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
-    if (node_sighandler) {
+    if (pidMap[sip->si_pid] == -302) { // this is one of ours
+      res = waitpid(sip->si_pid, &status, 0);
+      if (res != 0) {
+        pidMap[sip->si_pid] = WEXITSTATUS(status);
+      }
+    } else if (node_sighandler) {
+      // Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
       node_sighandler(sig);
     }
 }
@@ -234,6 +235,7 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
+      pidMap[pid] = -302;
 
       return scope.Close(obj);
   }
