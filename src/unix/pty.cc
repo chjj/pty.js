@@ -111,9 +111,7 @@ sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     pid_t res;
     if (pidMap[sip->si_pid] == -302) { // this is one of ours
       res = waitpid(sip->si_pid, &status, 0);
-      if (res != 0) {
-        pidMap[sip->si_pid] = WEXITSTATUS(status);
-      }
+      pidMap[sip->si_pid] = WEXITSTATUS(status);
     } else if (node_sighandler) {
       // Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
       node_sighandler(sig);
