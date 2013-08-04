@@ -608,6 +608,7 @@ init(Handle<Object> target) {
   memset (&action, '\0', sizeof(action));
   action.sa_sigaction = sigChldHandler;
   action.sa_flags = SA_SIGINFO;
+  action.sa_flags |= SA_NOCLDSTOP;
   // set new SIGCHLD handler. this will call node/libuv's handler at the end.
   sigaction(SIGCHLD, &action, NULL);
   NODE_SET_METHOD(target, "fork", PtyFork);
