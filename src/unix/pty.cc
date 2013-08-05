@@ -118,6 +118,25 @@ sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
     }
 }
 
+void
+check_sigchld() {
+  // retrieve node/libuv's SIGCHLD handler.
+  struct sigaction node_action;
+  node_action.sa_flags = 0;
+  sigaction(SIGCHLD, NULL, &node_action);
+  if (node_action.sa_sigaction == sigChldHandler) {
+    return; // it's already installed
+  }
+  node_sighandler = node_action.sa_handler;
+  struct sigaction action;
+  memset (&action, '\0', sizeof(action));
+  action.sa_sigaction = sigChldHandler;
+  action.sa_flags = SA_SIGINFO;
+  action.sa_flags |= SA_NOCLDSTOP;
+  // set new SIGCHLD handler. this will call node/libuv's handler at the end.
+  sigaction(SIGCHLD, &action, NULL);
+}
+
 /**
  * PtyFork
  * pty.fork(file, args, env, cwd, cols, rows)
@@ -234,6 +253,7 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
       pidMap[pid] = -302;
+      check_sigchld();
 
       return scope.Close(obj);
   }
@@ -592,6 +612,7 @@ pty_forkpty(int *amaster, char *name,
 #endif
 }
 
+
 /**
  * Init
  */
@@ -599,18 +620,7 @@ pty_forkpty(int *amaster, char *name,
 extern "C" void
 init(Handle<Object> target) {
   HandleScope scope;
-  // retrieve node/libuv's SIGCHLD handler.
-  struct sigaction node_action;
-  node_action.sa_flags = 0;
-  sigaction(SIGCHLD, NULL, &node_action);
-  node_sighandler = node_action.sa_handler;
-  struct sigaction action;
-  memset (&action, '\0', sizeof(action));
-  action.sa_sigaction = sigChldHandler;
-  action.sa_flags = SA_SIGINFO;
-  action.sa_flags |= SA_NOCLDSTOP;
-  // set new SIGCHLD handler. this will call node/libuv's handler at the end.
-  sigaction(SIGCHLD, &action, NULL);
+  check_sigchld();
   NODE_SET_METHOD(target, "fork", PtyFork);
   NODE_SET_METHOD(target, "open", PtyOpen);
   NODE_SET_METHOD(target, "resize", PtyResize);
