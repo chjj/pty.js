@@ -27,6 +27,10 @@ term.on('data', function(data) {
   console.log(data);
 });
 
+term.on('close', function() {
+  console.log('exit status: %d', term.status);
+});
+
 term.write('ls\r');
 term.resize(100, 40);
 term.write('ls /\r');

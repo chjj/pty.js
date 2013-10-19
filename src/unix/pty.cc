@@ -15,6 +15,7 @@
 
 #include <v8.h>
 #include <node.h>
+#include <signal.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -22,7 +23,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <fcntl.h>
+#include <map>
 
 /* forkpty */
 /* http://www.gnu.org/software/gnulib/manual/html_node/forkpty.html */
@@ -73,6 +76,9 @@ PtyResize(const Arguments&);
 static Handle<Value>
 PtyGetProc(const Arguments&);
 
+static Handle<Value>
+PtyGetStatus(const Arguments&);
+
 static int
 pty_execvpe(const char *, char **, char **);
 
@@ -92,8 +98,44 @@ pty_forkpty(int *, char *,
             const struct termios *,
             const struct winsize *);
 
+std::map<int, int> pidMap;
+
 extern "C" void
 init(Handle<Object>);
+
+static void (*node_sighandler)(int) = NULL;
+
+void
+sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
+    int status = 0;
+    pid_t res;
+    if (pidMap[sip->si_pid] == -302) { // this is one of ours
+      res = waitpid(sip->si_pid, &status, 0);
+      pidMap[sip->si_pid] = WEXITSTATUS(status);
+    } else if (node_sighandler) {
+      // Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
+      node_sighandler(sig);
+    }
+}
+
+void
+check_sigchld() {
+  // retrieve node/libuv's SIGCHLD handler.
+  struct sigaction node_action;
+  node_action.sa_flags = 0;
+  sigaction(SIGCHLD, NULL, &node_action);
+  if (node_action.sa_sigaction == sigChldHandler) {
+    return; // it's already installed
+  }
+  node_sighandler = node_action.sa_handler;
+  struct sigaction action;
+  memset (&action, '\0', sizeof(action));
+  action.sa_sigaction = sigChldHandler;
+  action.sa_flags = SA_SIGINFO;
+  action.sa_flags |= SA_NOCLDSTOP;
+  // set new SIGCHLD handler. this will call node/libuv's handler at the end.
+  sigaction(SIGCHLD, &action, NULL);
+}
 
 /**
  * PtyFork
@@ -210,6 +252,8 @@ PtyFork(const Arguments& args) {
       obj->Set(String::New("fd"), Number::New(master));
       obj->Set(String::New("pid"), Number::New(pid));
       obj->Set(String::New("pty"), String::New(name));
+      pidMap[pid] = -302;
+      check_sigchld();
 
       return scope.Close(obj);
   }
@@ -332,6 +376,28 @@ PtyGetProc(const Arguments& args) {
   Local<String> name_ = String::New(name);
   free(name);
   return scope.Close(name_);
+}
+
+/**
+ * PtyGetStatus
+ * Foreground Process Name
+ * pty.status(pid)
+ */
+
+static Handle<Value>
+PtyGetStatus(const Arguments& args) {
+  HandleScope scope;
+
+  if (args.Length() != 1
+      || !args[0]->IsNumber()) {
+    return ThrowException(Exception::Error(
+      String::New("Usage: pty.status(pid)")));
+  }
+
+  int pid = args[0]->IntegerValue();
+
+  Local<Number> statusCode = Number::New(pidMap[pid]);
+  return scope.Close(statusCode);
 }
 
 /**
@@ -546,6 +612,7 @@ pty_forkpty(int *amaster, char *name,
 #endif
 }
 
+
 /**
  * Init
  */
@@ -553,10 +620,12 @@ pty_forkpty(int *amaster, char *name,
 extern "C" void
 init(Handle<Object> target) {
   HandleScope scope;
+  check_sigchld();
   NODE_SET_METHOD(target, "fork", PtyFork);
   NODE_SET_METHOD(target, "open", PtyOpen);
   NODE_SET_METHOD(target, "resize", PtyResize);
   NODE_SET_METHOD(target, "process", PtyGetProc);
+  NODE_SET_METHOD(target, "status", PtyGetStatus);
 }
 
 NODE_MODULE(pty, init)
