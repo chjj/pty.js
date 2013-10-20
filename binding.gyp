@@ -3,6 +3,7 @@
     'target_name': 'pty',
     'conditions': [
       ['OS=="win"', {
+		'msvs_disabled_warnings': [ 4506, 4530 ],
         'include_dirs' : [
           'deps/winpty/include',
         ],
@@ -12,7 +13,10 @@
         ],
         'sources' : [
           'src/win/pty.cc'
-        ]
+        ],
+		'libraries': [
+		  'shlwapi.lib',
+		],
       }, { # OS!="win"
         'sources': [
           'src/unix/pty.cc'
