@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <winpty.h>
+#include <Shlwapi.h> // PathCombine
 #include <string>
 #include <sstream>
 #include <iostream>
@@ -28,6 +29,7 @@ using namespace node;
 extern "C" void init(Handle<Object>);
 
 #define WINPTY_DBG_VARIABLE TEXT("WINPTYDBG")
+#define MAX_ENV 65536
 
 /**
 * winpty
@@ -72,13 +74,66 @@ static winpty_t *get_pipe_handle(int handle) {
 
 static bool remove_pipe_handle(int handle) {
   for(winpty_t *ptyHandle : ptyHandles) {
-    if((int)ptyHandle->controlPipe == handle) {
+    int current = (int)ptyHandle->controlPipe;
+    if(current == handle) {
       delete ptyHandle;
       ptyHandle = nullptr;
       return true;
     }
   }
   return false;
+}
+
+static bool file_exists(std::wstring filename) {
+  DWORD attr = ::GetFileAttributesW(filename.c_str());
+  if(attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    return false;
+  }
+  return true;
+}
+
+// cmd.exe -> C:\Windows\system32\cmd.exe
+static std::wstring get_shell_path(std::wstring filename)  {
+
+  std::wstring shellpath;
+
+  if(file_exists(filename)) {
+    return shellpath;
+  }
+
+  wchar_t buffer_[MAX_ENV];
+  int read = ::GetEnvironmentVariableW(L"Path", buffer_, MAX_ENV);
+  if(!read) {
+    return shellpath;
+  }
+
+  std::wstring delimiter = L";";
+  size_t pos = 0;
+  vector<wstring> paths;
+  std::wstring buffer(buffer_);
+  while ((pos = buffer.find(delimiter)) != std::wstring::npos) {
+    paths.push_back(buffer.substr(0, pos));
+    buffer.erase(0, pos + delimiter.length());
+  }
+
+  const wchar_t *filename_ = filename.c_str();
+
+  for(wstring path : paths) {
+    wchar_t searchPath[MAX_PATH];   
+    ::PathCombineW(searchPath, const_cast<wchar_t*>(path.c_str()), filename_);
+
+    if(searchPath == NULL) {
+      continue;
+    }
+
+    if(file_exists(searchPath)) {
+      shellpath = searchPath;
+      break;
+    }
+
+  }
+
+  return shellpath;
 }
 
 /*
@@ -105,7 +160,7 @@ x64) http://sourceforge.net/projects/pywin32/files/pywin32/Build%20218/pywin32-2
 *
 * var pty = require('./');
 *
-* var term = pty.fork('cmd', [], {
+* var term = pty.fork('cmd.exe', [], {
 *   name: 'Windows Shell',
 *	  cols: 80,
 *	  rows: 30,
@@ -133,7 +188,7 @@ static Handle<Value> PtyOpen(const Arguments& args) {
       String::New("Usage: pty.open(dataPipe, cols, rows, debug)")));
   }
 
-  const wchar_t *pipeName = to_wstring(String::Utf8Value(args[0]->ToString()));
+  std::wstring pipeName = to_wstring(String::Utf8Value(args[0]->ToString()));
   int cols = args[1]->Int32Value();
   int rows = args[2]->Int32Value();
   bool debug = args[3]->ToBoolean()->IsTrue();
@@ -142,7 +197,7 @@ static Handle<Value> PtyOpen(const Arguments& args) {
   SetEnvironmentVariable(WINPTY_DBG_VARIABLE, debug ? "1" : NULL); // NULL = deletes variable
 
   // Open a new pty session.
-  winpty_t *pc = winpty_open_use_own_datapipe(pipeName, cols, rows);
+  winpty_t *pc = winpty_open_use_own_datapipe(pipeName.c_str(), cols, rows);
 
   // Error occured during startup of agent process.
   assert(pc != nullptr);
@@ -155,8 +210,6 @@ static Handle<Value> PtyOpen(const Arguments& args) {
   marshal->Set(String::New("pid"), Number::New((int)pc->controlPipe));
   marshal->Set(String::New("pty"), Number::New(InterlockedIncrement(&ptyCounter)));
   marshal->Set(String::New("fd"), Number::New(-1));
-
-  delete pipeName;
 
   return scope.Close(marshal);
 
@@ -181,13 +234,15 @@ static Handle<Value> PtyStartProcess(const Arguments& args) {
       String::New("Usage: pty.startProcess(pid, file, cmdline, env, cwd)")));
   }
 
+  Handle<Value> exception;
+  std::stringstream why;
+  
   // Get winpty_t by control pipe handle
   int pid = args[0]->Int32Value();
-
   winpty_t *pc = get_pipe_handle(pid);
   assert(pc != nullptr);
 
-  const wchar_t *file = to_wstring(String::Utf8Value(args[1]->ToString()));
+  const wchar_t *filename = to_wstring(String::Utf8Value(args[1]->ToString()));
   const wchar_t *cmdline = to_wstring(String::Utf8Value(args[2]->ToString()));
   const wchar_t *cwd = to_wstring(String::Utf8Value(args[4]->ToString()));
 
@@ -212,11 +267,45 @@ static Handle<Value> PtyStartProcess(const Arguments& args) {
     wcscat(env, L"\0");
   }
 
-  // Start new terminal
-  int result = winpty_start_process(pc, file, cmdline, cwd, env);
+  // use environment 'Path' variable to determine location of 
+  // the relative path that we have recieved (e.g cmd.exe)
+  std::wstring shellpath;
+  if(::PathIsRelativeW(filename)) {
+    shellpath = get_shell_path(filename);
+  } else {
+    shellpath = filename;
+  }
+
+  std::string shellpath_(shellpath.begin(), shellpath.end());
+  
+  if(shellpath.empty() || !file_exists(shellpath)) {
+    goto invalid_filename;
+  }
+
+  goto open;
+
+open:
+   int result = winpty_start_process(pc, shellpath.c_str(), cmdline, cwd, env);
+   if(result != 0) {
+      why << "Unable to start terminal process. Win32 error code: " << result;
+      exception = ThrowException(Exception::Error(String::New(why.str().c_str())));
+   }
+   goto cleanup;
+
+invalid_filename:
+   why << "File not found: " << shellpath_;
+   exception = ThrowException(Exception::Error(String::New(why.str().c_str())));
+   goto cleanup;
+
+cleanup:
+  delete filename;
+  delete cmdline;
+  delete cwd;
   delete env;
 
-  assert(0 == result);
+  if(!exception.IsEmpty()) {
+    return exception;
+  }
 
   return scope.Close(Undefined());
 }
