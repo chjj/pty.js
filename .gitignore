@@ -2,13 +2,13 @@ deps/winpty/Default/*
 Default/*
 node_modules/*
 out/*
-build/*
+#build/*
 .lock-wscript
 Makefile.gyp
 *.swp
 *.Makefile
 *.target.gyp.mk
-*.node
+#*.node
 *.sln
 *.sdf
 *.vcxproj
