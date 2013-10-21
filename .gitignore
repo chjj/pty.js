@@ -1,6 +1,6 @@
 deps/winpty/Default/*
 Default/*
-#node_modules/*
+node_modules/*
 out/*
 build/*
 .lock-wscript
