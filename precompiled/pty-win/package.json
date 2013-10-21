@@ -1,0 +1,31 @@
+{
+  "name": "pty.js",
+  "description": "Pseudo terminals for node.",
+  "author": "Christopher Jeffrey",
+  "version": "0.2.3",
+  "main": "./index.js",
+  "repository": "git://github.com/chjj/pty.js.git",
+  "homepage": "https://github.com/chjj/pty.js",
+  "bugs": {
+    "url": "https://github.com/chjj/pty.js/issues"
+  },
+  "keywords": [
+    "pty",
+    "tty",
+    "terminal"
+  ],
+  "scripts": {
+    "test": "NODE_ENV=test mocha -R spec"
+  },
+  "tags": [
+    "pty",
+    "tty",
+    "terminal"
+  ],
+  "dependencies": {
+    "extend": "~1.2.1"
+  },
+  "devDependencies": {
+    "mocha": "~1.7.1"
+  }
+}
