@@ -210,8 +210,6 @@ static NAN_METHOD(PtyOpen) {
   marshal->Set(NanNew<String>("pty"), NanNew<Number>(InterlockedIncrement(&ptyCounter)));
   marshal->Set(NanNew<String>("fd"), NanNew<Number>(-1));
 
-  delete pipeName;
-
   NanReturnValue(marshal);
 }
 
