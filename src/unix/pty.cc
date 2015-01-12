@@ -14,7 +14,6 @@
  */
 
 #include "nan.h"
-
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -22,22 +21,16 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <fcntl.h>
+#include <map>
 
 /* forkpty */
 /* http://www.gnu.org/software/gnulib/manual/html_node/forkpty.html */
 #if defined(__GLIBC__) || defined(__CYGWIN__)
 #include <pty.h>
 #elif defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__)
-/**
- * From node v0.10.28 (at least?) there is also a "util.h" in node/src, which would confuse
- * the compiler when looking for "util.h".
- */
-#if NODE_VERSION_AT_LEAST(0, 10, 28)
 #include </usr/include/util.h>
-#else
-#include <util.h>
-#endif
 #elif defined(__FreeBSD__)
 #include <libutil.h>
 #elif defined(__sun)
@@ -73,6 +66,7 @@ NAN_METHOD(PtyFork);
 NAN_METHOD(PtyOpen);
 NAN_METHOD(PtyResize);
 NAN_METHOD(PtyGetProc);
+NAN_METHOD(PtyGetStatus);
 
 static int
 pty_execvpe(const char *, char **, char **);
@@ -85,16 +79,52 @@ pty_getproc(int, char *);
 
 static int
 pty_openpty(int *, int *, char *,
-            const struct termios *,
-            const struct winsize *);
+						const struct termios *,
+						const struct winsize *);
 
 static pid_t
 pty_forkpty(int *, char *,
-            const struct termios *,
-            const struct winsize *);
+						const struct termios *,
+						const struct winsize *);
+
+std::map<int, int> pidMap;
 
 extern "C" void
 init(Handle<Object>);
+
+static void (*node_sighandler)(int) = NULL;
+
+void
+sigChldHandler(int sig, siginfo_t *sip, void *ctx) {
+		int status = 0;
+		pid_t res;
+		if (pidMap[sip->si_pid] == -302) { // this is one of ours
+			res = waitpid(sip->si_pid, &status, 0);
+			pidMap[sip->si_pid] = WEXITSTATUS(status);
+		} else if (node_sighandler) {
+			// Can only have one SIGCHLD handler at a time, so we need to call node/libuv's handler.
+			node_sighandler(sig);
+		}
+}
+
+void
+check_sigchld() {
+	// retrieve node/libuv's SIGCHLD handler.
+	struct sigaction node_action;
+	node_action.sa_flags = 0;
+	sigaction(SIGCHLD, NULL, &node_action);
+	if (node_action.sa_sigaction == sigChldHandler) {
+		return; // it's already installed
+	}
+	node_sighandler = node_action.sa_handler;
+	struct sigaction action;
+	memset (&action, '\0', sizeof(action));
+	action.sa_sigaction = sigChldHandler;
+	action.sa_flags = SA_SIGINFO;
+	action.sa_flags |= SA_NOCLDSTOP;
+	// set new SIGCHLD handler. this will call node/libuv's handler at the end.
+	sigaction(SIGCHLD, &action, NULL);
+}
 
 /**
  * PtyFork
@@ -102,117 +132,119 @@ init(Handle<Object>);
  */
 
 NAN_METHOD(PtyFork) {
-  NanScope();
+	NanScope();
 
-  if (args.Length() < 6
-      || !args[0]->IsString()
-      || !args[1]->IsArray()
-      || !args[2]->IsArray()
-      || !args[3]->IsString()
-      || !args[4]->IsNumber()
-      || !args[5]->IsNumber()
-      || (args.Length() >= 8 && !args[6]->IsNumber())
-      || (args.Length() >= 8 && !args[7]->IsNumber())) {
-    return NanThrowError(
-        "Usage: pty.fork(file, args, env, cwd, cols, rows[, uid, gid])");
-  }
+	if (args.Length() < 6
+			|| !args[0]->IsString()
+			|| !args[1]->IsArray()
+			|| !args[2]->IsArray()
+			|| !args[3]->IsString()
+			|| !args[4]->IsNumber()
+			|| !args[5]->IsNumber()
+			|| (args.Length() >= 8 && !args[6]->IsNumber())
+			|| (args.Length() >= 8 && !args[7]->IsNumber())) {
+		return NanThrowError(
+				"Usage: pty.fork(file, args, env, cwd, cols, rows[, uid, gid])");
+	}
 
-  // node/src/node_child_process.cc
+	// node/src/node_child_process.cc
 
-  // file
-  String::Utf8Value file(args[0]->ToString());
+	// file
+	String::Utf8Value file(args[0]->ToString());
 
-  // args
-  int i = 0;
-  Local<Array> argv_ = Local<Array>::Cast(args[1]);
-  int argc = argv_->Length();
-  int argl = argc + 1 + 1;
-  char **argv = new char*[argl];
-  argv[0] = strdup(*file);
-  argv[argl-1] = NULL;
-  for (; i < argc; i++) {
-    String::Utf8Value arg(argv_->Get(NanNew<Integer>(i))->ToString());
-    argv[i+1] = strdup(*arg);
-  }
+	// args
+	int i = 0;
+	Local<Array> argv_ = Local<Array>::Cast(args[1]);
+	int argc = argv_->Length();
+	int argl = argc + 1 + 1;
+	char **argv = new char*[argl];
+	argv[0] = strdup(*file);
+	argv[argl-1] = NULL;
+	for (; i < argc; i++) {
+		String::Utf8Value arg(argv_->Get(NanNew<Integer>(i))->ToString());
+		argv[i+1] = strdup(*arg);
+	}
 
-  // env
-  i = 0;
-  Local<Array> env_ = Local<Array>::Cast(args[2]);
-  int envc = env_->Length();
-  char **env = new char*[envc+1];
-  env[envc] = NULL;
-  for (; i < envc; i++) {
-    String::Utf8Value pair(env_->Get(NanNew<Integer>(i))->ToString());
-    env[i] = strdup(*pair);
-  }
+	// env
+	i = 0;
+	Local<Array> env_ = Local<Array>::Cast(args[2]);
+	int envc = env_->Length();
+	char **env = new char*[envc+1];
+	env[envc] = NULL;
+	for (; i < envc; i++) {
+		String::Utf8Value pair(env_->Get(NanNew<Integer>(i))->ToString());
+		env[i] = strdup(*pair);
+	}
 
-  // cwd
-  String::Utf8Value cwd_(args[3]->ToString());
-  char *cwd = strdup(*cwd_);
+	// cwd
+	String::Utf8Value cwd_(args[3]->ToString());
+	char *cwd = strdup(*cwd_);
 
-  // size
-  struct winsize winp;
-  winp.ws_col = args[4]->IntegerValue();
-  winp.ws_row = args[5]->IntegerValue();
-  winp.ws_xpixel = 0;
-  winp.ws_ypixel = 0;
+	// size
+	struct winsize winp;
+	winp.ws_col = args[4]->IntegerValue();
+	winp.ws_row = args[5]->IntegerValue();
+	winp.ws_xpixel = 0;
+	winp.ws_ypixel = 0;
 
-  // uid / gid
-  int uid = -1;
-  int gid = -1;
-  if (args.Length() >= 8) {
-    uid = args[6]->IntegerValue();
-    gid = args[7]->IntegerValue();
-  }
+	// uid / gid
+	int uid = -1;
+	int gid = -1;
+	if (args.Length() >= 8) {
+		uid = args[6]->IntegerValue();
+		gid = args[7]->IntegerValue();
+	}
 
-  // fork the pty
-  int master = -1;
-  char name[40];
-  pid_t pid = pty_forkpty(&master, name, NULL, &winp);
+	// fork the pty
+	int master = -1;
+	char name[40];
+	pid_t pid = pty_forkpty(&master, name, NULL, &winp);
 
-  if (pid) {
-    for (i = 0; i < argl; i++) free(argv[i]);
-    delete[] argv;
-    for (i = 0; i < envc; i++) free(env[i]);
-    delete[] env;
-    free(cwd);
-  }
+	if (pid) {
+		for (i = 0; i < argl; i++) free(argv[i]);
+		delete[] argv;
+		for (i = 0; i < envc; i++) free(env[i]);
+		delete[] env;
+		free(cwd);
+	}
 
-  switch (pid) {
-    case -1:
-      return NanThrowError("forkpty(3) failed.");
-    case 0:
-      if (strlen(cwd)) chdir(cwd);
+	switch (pid) {
+		case -1:
+			return NanThrowError("forkpty(3) failed.");
+		case 0:
+			if (strlen(cwd)) chdir(cwd);
 
-      if (uid != -1 && gid != -1) {
-        if (setgid(gid) == -1) {
-          perror("setgid(2) failed.");
-          _exit(1);
-        }
-        if (setuid(uid) == -1) {
-          perror("setuid(2) failed.");
-          _exit(1);
-        }
-      }
+			if (uid != -1 && gid != -1) {
+				if (setgid(gid) == -1) {
+					perror("setgid(2) failed.");
+					_exit(1);
+				}
+				if (setuid(uid) == -1) {
+					perror("setuid(2) failed.");
+					_exit(1);
+				}
+			}
 
-      pty_execvpe(argv[0], argv, env);
+			pty_execvpe(argv[0], argv, env);
 
-      perror("execvp(3) failed.");
-      _exit(1);
-    default:
-      if (pty_nonblock(master) == -1) {
-        return NanThrowError("Could not set master fd to nonblocking.");
-      }
+			perror("execvp(3) failed.");
+			_exit(1);
+		default:
+			if (pty_nonblock(master) == -1) {
+				return NanThrowError("Could not set master fd to nonblocking.");
+			}
 
-      Local<Object> obj = NanNew<Object>();
-      obj->Set(NanNew<String>("fd"), NanNew<Number>(master));
-      obj->Set(NanNew<String>("pid"), NanNew<Number>(pid));
-      obj->Set(NanNew<String>("pty"), NanNew<String>(name));
+			Local<Object> obj = NanNew<Object>();
+			obj->Set(NanNew<String>("fd"), NanNew<Number>(master));
+			obj->Set(NanNew<String>("pid"), NanNew<Number>(pid));
+			obj->Set(NanNew<String>("pty"), NanNew<String>(name));
+			pidMap[pid] = -302;
+			check_sigchld();
 
-      NanReturnValue(obj);
-  }
+			NanReturnValue(obj);
+	}
 
-  NanReturnUndefined();
+	NanReturnUndefined();
 }
 
 /**
@@ -221,44 +253,44 @@ NAN_METHOD(PtyFork) {
  */
 
 NAN_METHOD(PtyOpen) {
-  NanScope();
+	NanScope();
 
-  if (args.Length() != 2
-      || !args[0]->IsNumber()
-      || !args[1]->IsNumber()) {
-    return NanThrowError("Usage: pty.open(cols, rows)");
-  }
+	if (args.Length() != 2
+			|| !args[0]->IsNumber()
+			|| !args[1]->IsNumber()) {
+		return NanThrowError("Usage: pty.open(cols, rows)");
+	}
 
-  // size
-  struct winsize winp;
-  winp.ws_col = args[0]->IntegerValue();
-  winp.ws_row = args[1]->IntegerValue();
-  winp.ws_xpixel = 0;
-  winp.ws_ypixel = 0;
+	// size
+	struct winsize winp;
+	winp.ws_col = args[0]->IntegerValue();
+	winp.ws_row = args[1]->IntegerValue();
+	winp.ws_xpixel = 0;
+	winp.ws_ypixel = 0;
 
-  // pty
-  int master, slave;
-  char name[40];
-  int ret = pty_openpty(&master, &slave, name, NULL, &winp);
+	// pty
+	int master, slave;
+	char name[40];
+	int ret = pty_openpty(&master, &slave, name, NULL, &winp);
 
-  if (ret == -1) {
-    return NanThrowError("openpty(3) failed.");
-  }
+	if (ret == -1) {
+		return NanThrowError("openpty(3) failed.");
+	}
 
-  if (pty_nonblock(master) == -1) {
-    return NanThrowError("Could not set master fd to nonblocking.");
-  }
+	if (pty_nonblock(master) == -1) {
+		return NanThrowError("Could not set master fd to nonblocking.");
+	}
 
-  if (pty_nonblock(slave) == -1) {
-    return NanThrowError("Could not set slave fd to nonblocking.");
-  }
+	if (pty_nonblock(slave) == -1) {
+		return NanThrowError("Could not set slave fd to nonblocking.");
+	}
 
-  Local<Object> obj = NanNew<Object>();
-  obj->Set(NanNew<String>("master"), NanNew<Number>(master));
-  obj->Set(NanNew<String>("slave"), NanNew<Number>(slave));
-  obj->Set(NanNew<String>("pty"), NanNew<String>(name));
+	Local<Object> obj = NanNew<Object>();
+	obj->Set(NanNew<String>("master"), NanNew<Number>(master));
+	obj->Set(NanNew<String>("slave"), NanNew<Number>(slave));
+	obj->Set(NanNew<String>("pty"), NanNew<String>(name));
 
-  NanReturnValue(obj);
+	NanReturnValue(obj);
 }
 
 /**
@@ -267,28 +299,28 @@ NAN_METHOD(PtyOpen) {
  */
 
 NAN_METHOD(PtyResize) {
-  NanScope();
+	NanScope();
 
-  if (args.Length() != 3
-      || !args[0]->IsNumber()
-      || !args[1]->IsNumber()
-      || !args[2]->IsNumber()) {
-    return NanThrowError("Usage: pty.resize(fd, cols, rows)");
-  }
+	if (args.Length() != 3
+			|| !args[0]->IsNumber()
+			|| !args[1]->IsNumber()
+			|| !args[2]->IsNumber()) {
+		return NanThrowError("Usage: pty.resize(fd, cols, rows)");
+	}
 
-  int fd = args[0]->IntegerValue();
+	int fd = args[0]->IntegerValue();
 
-  struct winsize winp;
-  winp.ws_col = args[1]->IntegerValue();
-  winp.ws_row = args[2]->IntegerValue();
-  winp.ws_xpixel = 0;
-  winp.ws_ypixel = 0;
+	struct winsize winp;
+	winp.ws_col = args[1]->IntegerValue();
+	winp.ws_row = args[2]->IntegerValue();
+	winp.ws_xpixel = 0;
+	winp.ws_ypixel = 0;
 
-  if (ioctl(fd, TIOCSWINSZ, &winp) == -1) {
-    return NanThrowError("ioctl(2) failed.");
-  }
+	if (ioctl(fd, TIOCSWINSZ, &winp) == -1) {
+		return NanThrowError("ioctl(2) failed.");
+	}
 
-  NanReturnUndefined();
+	NanReturnUndefined();
 }
 
 /**
@@ -298,28 +330,47 @@ NAN_METHOD(PtyResize) {
  */
 
 NAN_METHOD(PtyGetProc) {
-  NanScope();
+	NanScope();
 
-  if (args.Length() != 2
-      || !args[0]->IsNumber()
-      || !args[1]->IsString()) {
-    return NanThrowError("Usage: pty.process(fd, tty)");
-  }
+	if (args.Length() != 2
+			|| !args[0]->IsNumber()
+			|| !args[1]->IsString()) {
+		return NanThrowError("Usage: pty.process(fd, tty)");
+	}
 
-  int fd = args[0]->IntegerValue();
+	int fd = args[0]->IntegerValue();
 
-  String::Utf8Value tty_(args[1]->ToString());
-  char *tty = strdup(*tty_);
-  char *name = pty_getproc(fd, tty);
-  free(tty);
+	String::Utf8Value tty_(args[1]->ToString());
+	char *tty = strdup(*tty_);
+	char *name = pty_getproc(fd, tty);
+	free(tty);
 
-  if (name == NULL) {
-    NanReturnUndefined();
-  }
+	if (name == NULL) {
+		NanReturnUndefined();
+	}
 
-  Local<String> name_ = NanNew<String>(name);
-  free(name);
-  NanReturnValue(name_);
+	Local<String> name_ = NanNew<String>(name);
+	free(name);
+	NanReturnValue(name_);
+}
+
+/**
+ * PtyGetStatus
+ * Foreground Process Name
+ * pty.status(pid)
+ */
+NAN_METHOD(PtyGetStatus) {
+	NanScope();
+
+	if (args.Length() != 1
+			|| !args[0]->IsNumber()) {
+		return NanThrowError("Usage: pty.status(pid)");
+	}
+
+	int pid = args[0]->IntegerValue();
+
+	Local<Number> statusCode = NanNew<Number>(pidMap[pid]);
+	NanReturnValue(statusCode);
 }
 
 /**
@@ -330,11 +381,11 @@ NAN_METHOD(PtyGetProc) {
 // http://www.gnu.org/software/gnulib/manual/html_node/execvpe.html
 static int
 pty_execvpe(const char *file, char **argv, char **envp) {
-  char **old = environ;
-  environ = envp;
-  int ret = execvp(file, argv);
-  environ = old;
-  return ret;
+	char **old = environ;
+	environ = envp;
+	int ret = execvp(file, argv);
+	environ = old;
+	return ret;
 }
 
 /**
@@ -343,9 +394,9 @@ pty_execvpe(const char *file, char **argv, char **envp) {
 
 static int
 pty_nonblock(int fd) {
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (flags == -1) return -1;
-  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1) return -1;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 /**
@@ -374,73 +425,73 @@ pty_nonblock(int fd) {
 
 static char *
 pty_getproc(int fd, char *tty) {
-  FILE *f;
-  char *path, *buf;
-  size_t len;
-  int ch;
-  pid_t pgrp;
-  int r;
+	FILE *f;
+	char *path, *buf;
+	size_t len;
+	int ch;
+	pid_t pgrp;
+	int r;
 
-  if ((pgrp = tcgetpgrp(fd)) == -1) {
-    return NULL;
-  }
+	if ((pgrp = tcgetpgrp(fd)) == -1) {
+		return NULL;
+	}
 
-  r = asprintf(&path, "/proc/%lld/cmdline", (long long)pgrp);
-  if (r == -1 || path == NULL) return NULL;
+	r = asprintf(&path, "/proc/%lld/cmdline", (long long)pgrp);
+	if (r == -1 || path == NULL) return NULL;
 
-  if ((f = fopen(path, "r")) == NULL) {
-    free(path);
-    return NULL;
-  }
+	if ((f = fopen(path, "r")) == NULL) {
+		free(path);
+		return NULL;
+	}
 
-  free(path);
+	free(path);
 
-  len = 0;
-  buf = NULL;
-  while ((ch = fgetc(f)) != EOF) {
-    if (ch == '\0') break;
-    buf = (char *)realloc(buf, len + 2);
-    if (buf == NULL) return NULL;
-    buf[len++] = ch;
-  }
+	len = 0;
+	buf = NULL;
+	while ((ch = fgetc(f)) != EOF) {
+		if (ch == '\0') break;
+		buf = (char *)realloc(buf, len + 2);
+		if (buf == NULL) return NULL;
+		buf[len++] = ch;
+	}
 
-  if (buf != NULL) {
-    buf[len] = '\0';
-  }
+	if (buf != NULL) {
+		buf[len] = '\0';
+	}
 
-  fclose(f);
-  return buf;
+	fclose(f);
+	return buf;
 }
 
 #elif defined(__APPLE__)
 
 static char *
 pty_getproc(int fd, char *tty) {
-  int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 0 };
-  size_t size;
-  struct kinfo_proc kp;
+	int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 0 };
+	size_t size;
+	struct kinfo_proc kp;
 
-  if ((mib[3] = tcgetpgrp(fd)) == -1) {
-    return NULL;
-  }
+	if ((mib[3] = tcgetpgrp(fd)) == -1) {
+		return NULL;
+	}
 
-  size = sizeof kp;
-  if (sysctl(mib, 4, &kp, &size, NULL, 0) == -1) {
-    return NULL;
-  }
+	size = sizeof kp;
+	if (sysctl(mib, 4, &kp, &size, NULL, 0) == -1) {
+		return NULL;
+	}
 
-  if (*kp.kp_proc.p_comm == '\0') {
-    return NULL;
-  }
+	if (*kp.kp_proc.p_comm == '\0') {
+		return NULL;
+	}
 
-  return strdup(kp.kp_proc.p_comm);
+	return strdup(kp.kp_proc.p_comm);
 }
 
 #else
 
 static char *
 pty_getproc(int fd, char *tty) {
-  return NULL;
+	return NULL;
 }
 
 #endif
@@ -451,88 +502,89 @@ pty_getproc(int fd, char *tty) {
 
 static int
 pty_openpty(int *amaster, int *aslave, char *name,
-            const struct termios *termp,
-            const struct winsize *winp) {
+						const struct termios *termp,
+						const struct winsize *winp) {
 #if defined(__sun)
-  char *slave_name;
-  int slave;
-  int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
-  if (master == -1) return -1;
-  if (amaster) *amaster = master;
+	char *slave_name;
+	int slave;
+	int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+	if (master == -1) return -1;
+	if (amaster) *amaster = master;
 
-  if (grantpt(master) == -1) goto err;
-  if (unlockpt(master) == -1) goto err;
+	if (grantpt(master) == -1) goto err;
+	if (unlockpt(master) == -1) goto err;
 
-  slave_name = ptsname(master);
-  if (slave_name == NULL) goto err;
-  if (name) strcpy(name, slave_name);
+	slave_name = ptsname(master);
+	if (slave_name == NULL) goto err;
+	if (name) strcpy(name, slave_name);
 
-  slave = open(slave_name, O_RDWR | O_NOCTTY);
-  if (slave == -1) goto err;
-  if (aslave) *aslave = slave;
+	slave = open(slave_name, O_RDWR | O_NOCTTY);
+	if (slave == -1) goto err;
+	if (aslave) *aslave = slave;
 
-  ioctl(slave, I_PUSH, "ptem");
-  ioctl(slave, I_PUSH, "ldterm");
-  ioctl(slave, I_PUSH, "ttcompat");
+	ioctl(slave, I_PUSH, "ptem");
+	ioctl(slave, I_PUSH, "ldterm");
+	ioctl(slave, I_PUSH, "ttcompat");
 
-  if (termp) tcsetattr(slave, TCSAFLUSH, termp);
-  if (winp) ioctl(slave, TIOCSWINSZ, winp);
+	if (termp) tcsetattr(slave, TCSAFLUSH, termp);
+	if (winp) ioctl(slave, TIOCSWINSZ, winp);
 
-  return 0;
+	return 0;
 
 err:
-  close(master);
-  return -1;
+	close(master);
+	return -1;
 #else
-  return openpty(amaster, aslave, name, (termios *)termp, (winsize *)winp);
+	return openpty(amaster, aslave, name, (termios *)termp, (winsize *)winp);
 #endif
 }
 
 static pid_t
 pty_forkpty(int *amaster, char *name,
-            const struct termios *termp,
-            const struct winsize *winp) {
+						const struct termios *termp,
+						const struct winsize *winp) {
 #if defined(__sun)
-  int master, slave;
+	int master, slave;
 
-  int ret = pty_openpty(&master, &slave, name, termp, winp);
-  if (ret == -1) return -1;
-  if (amaster) *amaster = master;
+	int ret = pty_openpty(&master, &slave, name, termp, winp);
+	if (ret == -1) return -1;
+	if (amaster) *amaster = master;
 
-  pid_t pid = fork();
+	pid_t pid = fork();
 
-  switch (pid) {
-    case -1:
-      close(master);
-      close(slave);
-      return -1;
-    case 0:
-      close(master);
+	switch (pid) {
+		case -1:
+			close(master);
+			close(slave);
+			return -1;
+		case 0:
+			close(master);
 
-      setsid();
+			setsid();
 
 #if defined(TIOCSCTTY)
-      // glibc does this
-      if (ioctl(slave, TIOCSCTTY, NULL) == -1) _exit(1);
+			// glibc does this
+			if (ioctl(slave, TIOCSCTTY, NULL) == -1) _exit(1);
 #endif
 
-      dup2(slave, 0);
-      dup2(slave, 1);
-      dup2(slave, 2);
+			dup2(slave, 0);
+			dup2(slave, 1);
+			dup2(slave, 2);
 
-      if (slave > 2) close(slave);
+			if (slave > 2) close(slave);
 
-      return 0;
-    default:
-      close(slave);
-      return pid;
-  }
+			return 0;
+		default:
+			close(slave);
+			return pid;
+	}
 
-  return -1;
+	return -1;
 #else
-  return forkpty(amaster, name, (termios *)termp, (winsize *)winp);
+	return forkpty(amaster, name, (termios *)termp, (winsize *)winp);
 #endif
 }
+
 
 /**
  * Init
@@ -540,11 +592,13 @@ pty_forkpty(int *amaster, char *name,
 
 extern "C" void
 init(Handle<Object> target) {
-  NanScope();
-  NODE_SET_METHOD(target, "fork", PtyFork);
-  NODE_SET_METHOD(target, "open", PtyOpen);
-  NODE_SET_METHOD(target, "resize", PtyResize);
-  NODE_SET_METHOD(target, "process", PtyGetProc);
+	NanScope();
+	check_sigchld();
+	NODE_SET_METHOD(target, "fork", PtyFork);
+	NODE_SET_METHOD(target, "open", PtyOpen);
+	NODE_SET_METHOD(target, "resize", PtyResize);
+	NODE_SET_METHOD(target, "process", PtyGetProc);
+	NODE_SET_METHOD(target, "status", PtyGetStatus);
 }
 
 NODE_MODULE(pty, init)
