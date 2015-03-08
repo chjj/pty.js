@@ -233,7 +233,6 @@ static NAN_METHOD(PtyStartProcess) {
         "Usage: pty.startProcess(pid, file, cmdline, env, cwd)");
   }
 
-  Handle<Value> exception;
   std::stringstream why;
 
   // Get winpty_t by control pipe handle
@@ -287,13 +286,13 @@ open:
    int result = winpty_start_process(pc, shellpath.c_str(), cmdline, cwd, env);
    if(result != 0) {
       why << "Unable to start terminal process. Win32 error code: " << result;
-      exception = NanThrowError(why.str().c_str());
+      NanThrowError(why.str().c_str());
    }
    goto cleanup;
 
 invalid_filename:
    why << "File not found: " << shellpath_;
-   exception = NanThrowError(why.str().c_str());
+   NanThrowError(why.str().c_str());
    goto cleanup;
 
 cleanup:
@@ -301,10 +300,6 @@ cleanup:
   delete cmdline;
   delete cwd;
   delete env;
-
-  if(!exception.IsEmpty()) {
-    return exception;
-  }
 
   NanReturnUndefined();
 }
