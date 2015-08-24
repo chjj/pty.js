@@ -188,7 +188,7 @@ static NAN_METHOD(PtyOpen) {
     return NanThrowError("Usage: pty.open(dataPipe, cols, rows, debug)");
   }
 
-  std::wstring pipeName = to_wstring(String::Utf8Value(args[0]->ToString()));
+  const wchar_t* pipeName = to_wstring(String::Utf8Value(args[0]->ToString()));
   int cols = args[1]->Int32Value();
   int rows = args[2]->Int32Value();
   bool debug = args[3]->ToBoolean()->IsTrue();
@@ -197,7 +197,7 @@ static NAN_METHOD(PtyOpen) {
   SetEnvironmentVariable(WINPTY_DBG_VARIABLE, debug ? "1" : NULL); // NULL = deletes variable
 
   // Open a new pty session.
-  winpty_t *pc = winpty_open_use_own_datapipe(pipeName.c_str(), cols, rows);
+  winpty_t *pc = winpty_open_use_own_datapipe(pipeName, cols, rows);
 
   // Error occured during startup of agent process.
   assert(pc != nullptr);
@@ -246,25 +246,18 @@ static NAN_METHOD(PtyStartProcess) {
   const wchar_t *cwd = to_wstring(String::Utf8Value(args[4]->ToString()));
 
   // create environment block
-  wchar_t *env = NULL;
-  const Handle<Array> envValues = Handle<Array>::Cast(args[3]);
-  if(!envValues.IsEmpty()) {
-
-    std::wstringstream envBlock;
-
-    for(uint32_t i = 0; i < envValues->Length(); i++) {
-      std::wstring envValue(to_wstring(String::Utf8Value(envValues->Get(i)->ToString())));
-      envBlock << envValue << L' ';
-    }
-
-    std::wstring output = envBlock.str();
-
-    size_t count = output.size();
-    env = new wchar_t[count + 2];
-    wcsncpy(env, output.c_str(), count);
-
-    wcscat(env, L"\0");
-  }
+	std::wstring          env;
+	const Handle<Array>   envValues       = Handle<Array>::Cast(args[3]);
+	uint32_t              envValueCount   = envValues->Length();
+	if (envValueCount > 0)
+	{
+		for(uint32_t i=0; i<envValueCount; i++)
+		{
+			env.append(to_wstring(String::Utf8Value(envValues->Get(i)->ToString())));
+			env.push_back(L'\0');
+		}
+		env.push_back(L'\0');
+	}
 
   // use environment 'Path' variable to determine location of
   // the relative path that we have recieved (e.g cmd.exe)
@@ -300,7 +293,6 @@ cleanup:
   delete filename;
   delete cmdline;
   delete cwd;
-  delete env;
 
   if(!exception.IsEmpty()) {
     return exception;
