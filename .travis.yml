@@ -1,10 +1,8 @@
 language: node_js
 
 node_js:
-  - "4.2"
-
-before_install:
-  - npm install
-
-script:
-  - npm test
+  - "iojs"
+  - "0.12"
+  - "0.11"
+  - "0.10"
+  - "0.8"
