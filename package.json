@@ -1,7 +1,7 @@
 {
   "name": "ptyw.js",
   "description": "Pseudo terminals for node.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "license": "MIT",
   "main": "./index.js",
   "repository": "git://github.com/iiegor/ptyw.js.git",
