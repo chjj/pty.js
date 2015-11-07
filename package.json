@@ -1,7 +1,6 @@
 {
   "name": "ptyw.js",
   "description": "Pseudo terminals for node.",
-  "author": "Christopher Jeffrey",
   "version": "0.3.2",
   "license": "MIT",
   "main": "./index.js",
