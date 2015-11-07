@@ -1,3 +1,4 @@
+var tty = require('tty');
 var assert = require('assert');
 
 // testing reading data from stdin, since that's a crucial feature
@@ -11,7 +12,7 @@ process.stdin.setEncoding('utf8');
 
 // the child script expects 1 data event, with the text "☃"
 var dataCount = 0;
-process.stdin.on('data', function (data) {
+process.stdin.on('data', function(data) {
   dataCount++;
   assert.equal(data, '☃');
 
@@ -20,12 +21,15 @@ process.stdin.on('data', function (data) {
   clearTimeout(timeout);
 });
 
-var timeout = setTimeout(function () {
+var timeout = setTimeout(function() {
   console.error('TIMEOUT!');
   process.exit(7);
 }, 5000);
 
-process.on('exit', function (code) {
-  if (code === 7) return; // timeout
+process.on('exit', function(code) {
+  // timeout
+  if (code === 7) {
+    return;
+  }
   assert.equal(dataCount, 1);
 });
