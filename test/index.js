@@ -61,4 +61,14 @@ describe('Pty', function() {
       setTimeout(testCase.test.bind(term), 1000);
     });
   });
+
+  it('should support starting with a paused socket', function (done) {
+    var term = pty.spawn('echo', ['Immediate output'], { resume: false });
+    setTimeout(function () {
+      term.stdout.on('data', function (chunk) {
+        assert.equal(chunk.trim(), 'Immediate output');
+        done();
+      });
+    }, 1);
+  });
 });
