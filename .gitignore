@@ -17,4 +17,5 @@ Makefile.gyp
 *.filters
 *.user
 *.project
+.idea
 test.js
