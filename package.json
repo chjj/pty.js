@@ -16,7 +16,8 @@
     "terminal"
   ],
   "scripts": {
-    "test": "NODE_ENV=test mocha -R spec"
+    "test": "NODE_ENV=test mocha -R spec",
+    "test-windows": "set \"NODE_ENV=test\" && mocha -R spec test-windows"
   },
   "tags": [
     "pty",
