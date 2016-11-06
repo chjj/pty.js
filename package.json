@@ -25,7 +25,8 @@
   ],
   "dependencies": {
     "extend": "~1.2.1",
-    "nan": "2.3.5"
+    "nan": "2.3.5",
+    "node-gyp": "^3.4.0"
   },
   "devDependencies": {
     "mocha": "~1.17.1"
