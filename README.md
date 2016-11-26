@@ -13,9 +13,9 @@ This is useful for:
 ## Example Usage
 
 ``` js
-var pty = require('pty.js');
+const pty = require('pty.js');
 
-var term = pty.spawn('bash', [], {
+const term = pty.spawn('bash', [], {
   name: 'xterm-color',
   cols: 80,
   rows: 30,
@@ -23,7 +23,7 @@ var term = pty.spawn('bash', [], {
   env: process.env
 });
 
-term.on('data', function(data) {
+term.on('data', (data) => {
   console.log(data);
 });
 
