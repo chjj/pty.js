@@ -1,6 +1,6 @@
 # pty.js
 
-**⚠️ This project is no longer maintained ⚠️. For a maintained fork take a look at [Tyriar/node-pty](https://github.com/Tyriar/node-pty).**
+**⚠️ This project is no longer maintained ⚠️. For a maintained fork take a look at [node-pty](https://github.com/Microsoft/node-pty).**
 
 `forkpty(3)` bindings for node.js. This allows you to fork processes with pseudo
 terminal file descriptors. It returns a terminal object which allows reads
