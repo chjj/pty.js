@@ -24,10 +24,10 @@
     "terminal"
   ],
   "dependencies": {
-    "extend": "~1.2.1",
-    "nan": "2.3.5"
+    "extend": "~3.0.2",
+    "nan": "2.13.2"
   },
   "devDependencies": {
-    "mocha": "~1.17.1"
+    "mocha": "~6.1.4"
   }
 }
